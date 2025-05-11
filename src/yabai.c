@@ -53,7 +53,7 @@ pid_t g_pid;
 
 static int client_send_message(int argc, char **argv)
 {
-    if (argc <= 1) {
+        if (argc <= 1) {
         error("yabai-msg: no arguments given! abort..\n");
     }
 
@@ -81,32 +81,76 @@ static int client_send_message(int argc, char **argv)
     }
     *temp++ = '\0';
 
-    int sockfd;
-    char socket_file[MAXLEN];
-    snprintf(socket_file, sizeof(socket_file), SOCKET_PATH_FMT, user);
-
-    if (!socket_open(&sockfd)) {
-        error("yabai-msg: failed to open socket..\n");
+    CFStringRef portName = CFStringCreateWithCString(kCFAllocatorDefault, YABAI_PORT_NAME, kCFStringEncodingUTF8);
+    if (!portName) {
+        free(message);
+        error("yabai-msg: failed to create CFString for port name..\n");
     }
 
-    if (!socket_connect(sockfd, socket_file)) {
-        error("yabai-msg: failed to connect to socket..\n");
+    // Tạo remote message port
+    CFMessagePortRef remotePort = CFMessagePortCreateRemote(kCFAllocatorDefault, portName);
+    CFRelease(portName);
+
+    if (!remotePort) {
+        free(message);
+        error("yabai-msg: failed to connect to message port..\n");
     }
 
-    if (send(sockfd, message, sizeof(int)+message_length, 0) == -1) {
-        error("yabai-msg: failed to send data..\n");
-    }
-
-    shutdown(sockfd, SHUT_WR);
+    // Tạo CFData từ thông điệp
+    CFDataRef requestData = CFDataCreate(kCFAllocatorDefault, (UInt8 *)message, sizeof(int)+message_length);
     free(message);
 
+    if (!requestData) {
+        CFRelease(remotePort);
+        error("yabai-msg: failed to create CFData from message..\n");
+    }
+
+    // Thiết lập timeout
+    CFTimeInterval timeout = 2.0; // 2 second timeout
+
+    // Gửi thông điệp và đợi phản hồi
+    CFDataRef replyData = NULL;
+    SInt32 status = CFMessagePortSendRequest(
+        remotePort,
+        0, // msgid
+        requestData,
+        timeout,
+        timeout,
+        kCFRunLoopDefaultMode,
+        &replyData
+    );
+
+    CFRelease(requestData);
+
+    if (status != kCFMessagePortSuccess) {
+        CFRelease(remotePort);
+        return EXIT_FAILURE;
+    }
+
+    if (!replyData) {
+        CFRelease(remotePort);
+        return EXIT_FAILURE;
+    }
+
+    // Xử lý phản hồi
+    const UInt8 *bytes = CFDataGetBytePtr(replyData);
+    CFIndex length = CFDataGetLength(replyData);
+
+    if (!bytes || length <= 0) {
+        CFRelease(replyData);
+        CFRelease(remotePort);
+        return EXIT_FAILURE;
+    }
+
+    // Xử lý phản hồi
     int result = EXIT_SUCCESS;
     FILE *output = stdout;
-    int bytes_read = 0;
-    char rsp[BUFSIZ];
 
-    while ((bytes_read = read(sockfd, rsp, sizeof(rsp)-1)) > 0) {
-        rsp[bytes_read] = '\0';
+    // Tạo bản sao của dữ liệu phản hồi
+    char *rsp = malloc(length + 1);
+    if (rsp) {
+        memcpy(rsp, bytes, length);
+        rsp[length] = '\0';
 
         if (rsp[0] == FAILURE_MESSAGE[0]) {
             result = EXIT_FAILURE;
@@ -117,9 +161,12 @@ static int client_send_message(int argc, char **argv)
             fprintf(output, "%s", rsp);
             fflush(output);
         }
+
+        free(rsp);
     }
 
-    socket_close(sockfd);
+    CFRelease(replyData);
+    CFRelease(remotePort);
     return result;
 }
 

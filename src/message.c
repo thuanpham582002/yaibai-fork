@@ -2,6 +2,9 @@ static struct {
     int sockfd;
     bool is_running;
     pthread_t thread;
+    CFMessagePortRef message_port;
+    CFRunLoopSourceRef run_loop_source;
+    bool use_cfport;
 } g_message_loop;
 
 extern struct event_loop g_event_loop;
@@ -3001,33 +3004,164 @@ static void *message_loop_run(void *context)
 }
 #pragma clang diagnostic pop
 
+static CFDataRef message_port_callback(CFMessagePortRef local, SInt32 msgid, CFDataRef data, void *info)
+{
+    // Unused parameters
+    (void)local;
+    (void)msgid;
+    (void)info;
+
+    // Create a temporary file to capture the response
+    FILE *rsp = tmpfile();
+    if (!rsp) {
+        debug("CFMessagePort: Failed to create temporary file for response\n");
+        return NULL;
+    }
+    // Get the message data
+    const UInt8 *bytes = CFDataGetBytePtr(data);
+    CFIndex length = CFDataGetLength(data);
+
+    if (!bytes || length <= (CFIndex)sizeof(int)) {
+        debug("CFMessagePort: No valid message data received\n");
+        fclose(rsp);
+        return NULL;
+    }
+    // Skip the message length (first 4 bytes)
+    char *msg_content = (char *)bytes + sizeof(int);
+
+    // Handle the message
+    debug_message("CFMessagePort", msg_content);
+    handle_message(rsp, msg_content);
+
+    // Convert the response to data
+    fflush(rsp);
+    fseek(rsp, 0, SEEK_END);
+    long response_size = ftell(rsp);
+    fseek(rsp, 0, SEEK_SET);
+
+    char *response = malloc(response_size + 1);
+    CFDataRef returnData = NULL;
+
+    if (response) {
+        fread(response, 1, response_size, rsp);
+        response[response_size] = '\0';
+
+        // Create CFData from response
+        returnData = CFDataCreate(kCFAllocatorDefault, (UInt8 *)response, response_size);
+        free(response);
+    } else {
+        error("CFMessagePort: Failed to allocate memory for response\n");
+    }
+
+    fclose(rsp);
+    return returnData;
+}
+
+static bool cfmessageport_loop_begin(void)
+{
+    debug("CFMessagePort: Starting CFMessagePort loop\n");
+
+    CFStringRef portName = CFStringCreateWithCString(kCFAllocatorDefault, YABAI_PORT_NAME, kCFStringEncodingUTF8);
+    if (!portName) {
+        debug("CFMessagePort: Failed to create CFString for port name\n");
+        return false;
+    }
+
+    // Create a local message port
+    Boolean shouldFreeInfo = false;
+    CFMessagePortContext context = {0, NULL, NULL, NULL, NULL};
+
+    g_message_loop.message_port = CFMessagePortCreateLocal(
+        kCFAllocatorDefault,
+        portName,
+        message_port_callback,
+        &context,
+        &shouldFreeInfo
+    );
+
+    CFRelease(portName);
+
+    if (!g_message_loop.message_port) {
+        debug("CFMessagePort: Failed to create local message port\n");
+        return false;
+    }
+
+    g_message_loop.run_loop_source = CFMessagePortCreateRunLoopSource(
+        kCFAllocatorDefault,
+        g_message_loop.message_port,
+        0
+    );
+
+    if (!g_message_loop.run_loop_source) {
+        debug("CFMessagePort: Failed to create run loop source\n");
+        CFRelease(g_message_loop.message_port);
+        g_message_loop.message_port = NULL;
+        return false;
+    }
+
+    // Add the run loop source to the current run loop
+    CFRunLoopAddSource(
+        CFRunLoopGetCurrent(),
+        g_message_loop.run_loop_source,
+        kCFRunLoopDefaultMode
+    );
+
+    debug("CFMessagePort: Run loop source added to current run loop\n");
+    debug("CFMessagePort: Message loop started\n");
+
+    return true;
+}
+
 bool message_loop_begin(char *socket_path)
 {
+    debug("message_loop_begin: Starting message loop\n");
+
+    // Check if we should use CFMessagePort
+    g_message_loop.use_cfport = true;
+
+    if (g_message_loop.use_cfport) {
+        debug("message_loop_begin: Using CFMessagePort for communication\n");
+        bool result = cfmessageport_loop_begin();
+        return result;
+    }
+
+    // Fall back to socket if CFMessagePort is disabled
+    debug("message_loop_begin: Using socket for communication\n");
     struct sockaddr_un socket_address;
     socket_address.sun_family = AF_UNIX;
     snprintf(socket_address.sun_path, sizeof(socket_address.sun_path), "%s", socket_path);
     unlink(socket_path);
 
     if ((g_message_loop.sockfd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        debug("message_loop_begin: Failed to create socket: %s\n", strerror(errno));
         return false;
     }
 
+    debug("message_loop_begin: Binding socket to %s\n", socket_path);
     if (bind(g_message_loop.sockfd, (struct sockaddr *) &socket_address, sizeof(socket_address)) == -1) {
+        debug("message_loop_begin: Failed to bind socket: %s\n", strerror(errno));
         return false;
     }
 
+    debug("message_loop_begin: Setting socket permissions\n");
     if (chmod(socket_path, 0600) != 0) {
+        debug("message_loop_begin: Failed to set socket permissions: %s\n", strerror(errno));
         return false;
     }
 
+    debug("message_loop_begin: Setting socket to listen\n");
     if (listen(g_message_loop.sockfd, SOMAXCONN) == -1) {
+        debug("message_loop_begin: Failed to listen on socket: %s\n", strerror(errno));
         return false;
     }
 
+    debug("message_loop_begin: Setting socket flags\n");
     fcntl(g_message_loop.sockfd, F_SETFD, FD_CLOEXEC | fcntl(g_message_loop.sockfd, F_GETFD));
 
+    debug("message_loop_begin: Starting message loop thread\n");
     g_message_loop.is_running = true;
     pthread_create(&g_message_loop.thread, NULL, &message_loop_run, NULL);
+    debug("message_loop_begin: Message loop thread started\n");
 
     return true;
 }

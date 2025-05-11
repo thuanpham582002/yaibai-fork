@@ -1572,31 +1572,51 @@ static EVENT_HANDLER(DAEMON_MESSAGE)
 {
     TIME_FUNCTION;
 
+    debug("DAEMON_MESSAGE: Received message event on socket %d\n", param1);
+
     FILE *rsp         = NULL;
     int bytes_read    = 0;
     int bytes_to_read = 0;
 
+    debug("DAEMON_MESSAGE: Reading message size from socket\n");
     if (read(param1, &bytes_to_read, sizeof(int)) == sizeof(int)) {
+        debug("DAEMON_MESSAGE: Message size is %d bytes\n", bytes_to_read);
         char *message = ts_alloc_unaligned(bytes_to_read);
+        debug("DAEMON_MESSAGE: Allocated buffer for message\n");
 
         do {
             int cur_read = read(param1, message+bytes_read, bytes_to_read-bytes_read);
-            if (cur_read <= 0) break;
+            if (cur_read <= 0) {
+                debug("DAEMON_MESSAGE: Read error or connection closed: %s\n", strerror(errno));
+                break;
+            }
 
+            debug("DAEMON_MESSAGE: Read %d bytes, total %d/%d\n", cur_read, bytes_read + cur_read, bytes_to_read);
             bytes_read += cur_read;
         } while (bytes_read < bytes_to_read);
 
         if ((bytes_read == bytes_to_read) && (rsp = fdopen(param1, "w"))) {
+            debug("DAEMON_MESSAGE: Successfully read complete message, opening response stream\n");
             debug_message(__FUNCTION__, message);
+            debug("DAEMON_MESSAGE: Handling message\n");
             handle_message(rsp, message);
 
+            debug("DAEMON_MESSAGE: Flushing and closing response stream\n");
             fflush(rsp);
             fclose(rsp);
 
+            debug("DAEMON_MESSAGE: Message handling complete\n");
             return;
+        } else {
+            debug("DAEMON_MESSAGE: Failed to read complete message or open response stream\n");
+            debug("DAEMON_MESSAGE: bytes_read=%d, bytes_to_read=%d, rsp=%p, errno=%s\n",
+                  bytes_read, bytes_to_read, rsp, strerror(errno));
         }
+    } else {
+        debug("DAEMON_MESSAGE: Failed to read message size: %s\n", strerror(errno));
     }
 
+    debug("DAEMON_MESSAGE: Closing socket %d due to error\n", param1);
     socket_close(param1);
 }
 #pragma clang diagnostic pop

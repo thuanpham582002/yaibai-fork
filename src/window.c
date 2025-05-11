@@ -410,6 +410,8 @@ void window_serialize(FILE *rsp, struct window *window, uint64_t flags)
 {
     TIME_FUNCTION;
 
+    debug("window_serialize: serializing window %d with flags 0x%llx\n", window->id, flags);
+
     if (flags == 0x0) flags |= ~flags;
 
     uint64_t sid;
@@ -424,16 +426,19 @@ void window_serialize(FILE *rsp, struct window *window, uint64_t flags)
         (flags & WINDOW_PROPERTY_SPACE) ||
         (flags & WINDOW_PROPERTY_IS_VISIBLE)) {
         sid = window_space(window->id);
+        debug("window_serialize: window %d is on space %lld\n", window->id, sid);
     }
 
     if ((flags & WINDOW_PROPERTY_LEVEL) ||
         (flags & WINDOW_PROPERTY_LAYER)) {
         level = window_level(window->id);
+        debug("window_serialize: window %d has level %d\n", window->id, level);
     }
 
     if ((flags & WINDOW_PROPERTY_SUB_LEVEL) ||
         (flags & WINDOW_PROPERTY_SUB_LAYER)) {
         sub_level = window_sub_level(window->id);
+        debug("window_serialize: window %d has sub-level %d\n", window->id, sub_level);
     }
 
     if ((flags & WINDOW_PROPERTY_SPLIT_TYPE) ||
@@ -457,9 +462,11 @@ void window_serialize(FILE *rsp, struct window *window, uint64_t flags)
 
     bool did_output = false;
     fprintf(rsp, "{\n");
+    debug("window_serialize: starting JSON serialization for window %d\n", window->id);
 
     if (flags & WINDOW_PROPERTY_ID) {
         fprintf(rsp, "\t\"id\":%d", window->id);
+        debug("window_serialize: added id: %d\n", window->id);
         did_output = true;
     }
 
@@ -467,6 +474,7 @@ void window_serialize(FILE *rsp, struct window *window, uint64_t flags)
         if (did_output) fprintf(rsp, ",\n");
 
         fprintf(rsp, "\t\"pid\":%d", window->application->pid);
+        debug("window_serialize: added pid: %d\n", window->application->pid);
         did_output = true;
     }
 
@@ -477,6 +485,7 @@ void window_serialize(FILE *rsp, struct window *window, uint64_t flags)
         char *escaped_app = ts_string_escape(app);
 
         fprintf(rsp, "\t\"app\":\"%s\"", escaped_app ? escaped_app : app);
+        debug("window_serialize: added app: %s\n", app);
         did_output = true;
     }
 
@@ -487,6 +496,7 @@ void window_serialize(FILE *rsp, struct window *window, uint64_t flags)
         char *escaped_title = ts_string_escape(title);
 
         fprintf(rsp, "\t\"title\":\"%s\"", escaped_title ? escaped_title : title);
+        debug("window_serialize: added title: %s\n", title);
         did_output = true;
     }
 
@@ -708,6 +718,7 @@ void window_serialize(FILE *rsp, struct window *window, uint64_t flags)
     }
 
     fprintf(rsp, "\n}");
+    debug("window_serialize: completed JSON serialization for window %d\n", window->id);
 }
 
 char *window_property_title_ts(uint32_t wid)
