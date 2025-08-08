@@ -11,6 +11,10 @@ on:
         required: true
         default: 'v0.0.0'
 
+permissions:
+  contents: write
+  actions: read
+
 env:
   # Ensure we build universal binaries
   MACOSX_DEPLOYMENT_TARGET: 11.0
