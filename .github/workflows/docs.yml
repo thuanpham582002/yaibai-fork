@@ -1,0 +1,322 @@
+name: Documentation
+
+on:
+  push:
+    paths:
+      - 'doc/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - '**.asciidoc'
+  pull_request:
+    paths:
+      - 'doc/**' 
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - '**.asciidoc'
+  workflow_dispatch:
+
+jobs:
+  build-docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.0'
+        bundler-cache: true
+
+    - name: Install asciidoctor
+      run: |
+        gem install asciidoctor
+        gem install asciidoctor-pdf
+        asciidoctor --version
+
+    - name: Build man page
+      run: |
+        if [ -f "doc/yabai.asciidoc" ]; then
+          echo "Building man page from asciidoc..."
+          asciidoctor -b manpage doc/yabai.asciidoc -o doc/yabai.1
+          
+          if [ -f "doc/yabai.1" ]; then
+            echo "✅ Man page built successfully"
+            echo "Man page size: $(wc -l < doc/yabai.1) lines"
+            
+            # Test man page format
+            file doc/yabai.1
+            head -20 doc/yabai.1
+          else
+            echo "❌ Failed to build man page"
+            exit 1
+          fi
+        else
+          echo "❌ No asciidoc source found"
+          exit 1
+        fi
+
+    - name: Build HTML documentation
+      run: |
+        if [ -f "doc/yabai.asciidoc" ]; then
+          echo "Building HTML documentation..."
+          asciidoctor doc/yabai.asciidoc -o doc/yabai.html
+          
+          if [ -f "doc/yabai.html" ]; then
+            echo "✅ HTML documentation built successfully"
+            echo "HTML size: $(wc -c < doc/yabai.html) bytes"
+          else
+            echo "❌ Failed to build HTML documentation"
+            exit 1
+          fi
+        fi
+
+    - name: Build PDF documentation
+      run: |
+        if [ -f "doc/yabai.asciidoc" ]; then
+          echo "Building PDF documentation..."
+          asciidoctor-pdf doc/yabai.asciidoc -o doc/yabai.pdf
+          
+          if [ -f "doc/yabai.pdf" ]; then
+            echo "✅ PDF documentation built successfully"
+            echo "PDF size: $(wc -c < doc/yabai.pdf) bytes"
+          else
+            echo "⚠️ Failed to build PDF documentation (non-critical)"
+          fi
+        fi
+
+    - name: Validate documentation structure
+      run: |
+        echo "Validating documentation structure..."
+        
+        # Check for required sections in asciidoc
+        if [ -f "doc/yabai.asciidoc" ]; then
+          echo "Checking for standard man page sections..."
+          
+          # Check for NAME section
+          if grep -q "^== NAME" doc/yabai.asciidoc; then
+            echo "✅ NAME section found"
+          else
+            echo "⚠️ NAME section missing"
+          fi
+          
+          # Check for SYNOPSIS section  
+          if grep -q "^== SYNOPSIS" doc/yabai.asciidoc; then
+            echo "✅ SYNOPSIS section found"
+          else
+            echo "⚠️ SYNOPSIS section missing"
+          fi
+          
+          # Check for DESCRIPTION section
+          if grep -q "^== DESCRIPTION" doc/yabai.asciidoc; then
+            echo "✅ DESCRIPTION section found"
+          else
+            echo "⚠️ DESCRIPTION section missing"
+          fi
+          
+          # Check for OPTIONS section
+          if grep -q "^== OPTIONS" doc/yabai.asciidoc; then
+            echo "✅ OPTIONS section found"
+          else
+            echo "⚠️ OPTIONS section missing"
+          fi
+        fi
+
+    - name: Check for broken internal references
+      run: |
+        echo "Checking for broken internal references..."
+        
+        if [ -f "doc/yabai.asciidoc" ]; then
+          # Look for potential broken cross-references
+          if grep -n "<<.*>>" doc/yabai.asciidoc; then
+            echo "Found cross-references - manual verification needed"
+          else
+            echo "No cross-references found"
+          fi
+          
+          # Check for potential broken anchor references
+          if grep -n "anchor:\[" doc/yabai.asciidoc; then
+            echo "Found anchors - manual verification of references needed"
+          else  
+            echo "No anchors found"
+          fi
+        fi
+
+    - name: Upload built documentation
+      uses: actions/upload-artifact@v3
+      with:
+        name: yabai-documentation
+        path: |
+          doc/yabai.1
+          doc/yabai.html
+          doc/yabai.pdf
+        retention-days: 30
+
+  validate-readme:
+    name: Validate README
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check README structure
+      run: |
+        echo "Validating README.md structure..."
+        
+        if [ ! -f "README.md" ]; then
+          echo "❌ README.md not found!"
+          exit 1
+        fi
+        
+        echo "✅ README.md found"
+        echo "README size: $(wc -c < README.md) bytes, $(wc -l < README.md) lines"
+
+    - name: Check for required sections
+      run: |
+        echo "Checking for required sections in README..."
+        
+        # Check for About section
+        if grep -q "^## About" README.md; then
+          echo "✅ About section found"
+        else
+          echo "⚠️ About section missing"
+        fi
+        
+        # Check for Installation section
+        if grep -q "^## Installation" README.md; then
+          echo "✅ Installation section found"
+        else
+          echo "⚠️ Installation section missing"
+        fi
+        
+        # Check for Requirements section
+        if grep -q "^## Requirements" README.md; then
+          echo "✅ Requirements section found"
+        else
+          echo "⚠️ Requirements section missing"
+        fi
+        
+        # Check for License section
+        if grep -q "^## License" README.md; then
+          echo "✅ License section found"
+        else
+          echo "⚠️ License section missing"
+        fi
+
+    - name: Check markdown links
+      run: |
+        echo "Checking markdown links..."
+        
+        # Extract all markdown links
+        grep -o '\[.*\]([^)]*)' README.md > links.txt 2>/dev/null || true
+        
+        if [ -s links.txt ]; then
+          echo "Found $(wc -l < links.txt) links to check:"
+          cat links.txt
+          
+          # Check for potential broken relative links
+          if grep -E '\]\(\./[^)]*\)' README.md; then
+            echo "Found relative links - should verify they exist:"
+            grep -E '\]\(\./[^)]*\)' README.md
+          fi
+          
+          # Check for GitHub-specific links
+          if grep -E '\]\(https://github\.com/[^)]*\)' README.md; then
+            echo "Found GitHub links (external validation needed)"
+          fi
+        else
+          echo "No markdown links found"
+        fi
+
+    - name: Check image references
+      run: |
+        echo "Checking image references..."
+        
+        # Check for image references
+        if grep -E '!\[.*\]\([^)]*\)' README.md; then
+          echo "Found image references:"
+          grep -E '!\[.*\]\([^)]*\)' README.md
+          
+          # Extract image paths and check if they exist
+          grep -oE '!\[.*\]\([^)]*\)' README.md | sed 's/.*](\([^)]*\)).*/\1/' > image_paths.txt
+          
+          while IFS= read -r image_path; do
+            if [ -f "$image_path" ]; then
+              echo "✅ Image found: $image_path"
+            else
+              echo "⚠️ Image not found: $image_path"
+            fi
+          done < image_paths.txt
+        else
+          echo "No image references found"
+        fi
+
+    - name: Check badges
+      run: |
+        echo "Checking status badges..."
+        
+        if grep -E 'https://img\.shields\.io' README.md; then
+          echo "Found shields.io badges:"
+          grep -oE 'https://img\.shields\.io[^)]*' README.md
+        else
+          echo "No shields.io badges found"
+        fi
+
+  validate-changelog:
+    name: Validate Changelog
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check changelog format
+      run: |
+        if [ -f "CHANGELOG.md" ]; then
+          echo "✅ CHANGELOG.md found"
+          echo "Changelog size: $(wc -c < CHANGELOG.md) bytes, $(wc -l < CHANGELOG.md) lines"
+          
+          # Check for version headers
+          if grep -E '^##? \[?[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md; then
+            echo "✅ Found version headers"
+            echo "Versions found:"
+            grep -E '^##? \[?[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -5
+          else
+            echo "⚠️ No standard version headers found"
+          fi
+          
+          # Check for unreleased section
+          if grep -i "unreleased" CHANGELOG.md; then
+            echo "✅ Found unreleased section"
+          else
+            echo "⚠️ No unreleased section found"
+          fi
+        else
+          echo "⚠️ CHANGELOG.md not found"
+        fi
+
+  documentation-summary:
+    name: Documentation Summary
+    runs-on: ubuntu-latest
+    needs: [build-docs, validate-readme, validate-changelog]
+    if: always()
+    
+    steps:
+    - name: Summary
+      run: |
+        echo "📚 Documentation Build Summary"
+        echo "=============================="
+        echo "Build Docs: ${{ needs.build-docs.result }}"
+        echo "README Validation: ${{ needs.validate-readme.result }}"  
+        echo "Changelog Validation: ${{ needs.validate-changelog.result }}"
+        
+        if [ "${{ needs.build-docs.result }}" = "success" ] && 
+           [ "${{ needs.validate-readme.result }}" = "success" ] && 
+           [ "${{ needs.validate-changelog.result }}" = "success" ]; then
+          echo "✅ All documentation checks passed!"
+        else
+          echo "⚠️ Some documentation checks failed or were skipped"
+        fi

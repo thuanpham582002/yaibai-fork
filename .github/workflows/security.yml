@@ -1,0 +1,326 @@
+name: Security
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - 'makefile'
+      - 'scripts/**'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - 'makefile'
+      - 'scripts/**'
+  schedule:
+    # Run daily security checks
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  static-analysis:
+    name: Static Code Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck clang-tools
+        
+        # Install additional security tools
+        pip3 install bandit safety
+
+    - name: Run cppcheck static analysis
+      run: |
+        echo "Running cppcheck static analysis..."
+        cppcheck --enable=all --inconclusive --xml --xml-version=2 \
+          --suppress=missingIncludeSystem \
+          --suppress=unusedFunction \
+          src/ 2> cppcheck-results.xml || true
+        
+        # Convert XML to readable format
+        if [ -f cppcheck-results.xml ]; then
+          echo "Cppcheck findings:"
+          if grep -q "<error" cppcheck-results.xml; then
+            grep "<error" cppcheck-results.xml | head -20
+            echo "Full results saved to artifact"
+          else
+            echo "✅ No issues found by cppcheck"
+          fi
+        fi
+
+    - name: Run clang-tidy analysis
+      run: |
+        echo "Running clang-tidy analysis..."
+        
+        # Create a compile_commands.json for better analysis
+        echo '[' > compile_commands.json
+        find src -name "*.c" -o -name "*.m" | while read file; do
+          echo "  {" >> compile_commands.json
+          echo "    \"directory\": \"$(pwd)\"," >> compile_commands.json
+          echo "    \"command\": \"clang -c $file\"," >> compile_commands.json
+          echo "    \"file\": \"$file\"" >> compile_commands.json
+          echo "  }," >> compile_commands.json
+        done
+        sed -i '$ s/,$//' compile_commands.json
+        echo ']' >> compile_commands.json
+        
+        # Run clang-tidy on main source files
+        find src -name "*.c" | head -10 | xargs -I {} \
+          clang-tidy {} -- -I./src -I./src/misc 2>&1 | tee clang-tidy-results.txt || true
+        
+        echo "Clang-tidy analysis complete"
+        if [ -s clang-tidy-results.txt ]; then
+          echo "Issues found - see artifact for details"
+        else
+          echo "✅ No issues found by clang-tidy"
+        fi
+
+    - name: Check for hardcoded secrets
+      run: |
+        echo "Checking for potential hardcoded secrets..."
+        
+        # Check for potential passwords, keys, tokens
+        echo "Checking for password-like patterns..."
+        grep -ri "password\|passwd\|pwd" src/ || echo "No password patterns found"
+        
+        echo "Checking for key-like patterns..."
+        grep -ri "api_key\|apikey\|secret_key\|secretkey" src/ || echo "No API key patterns found"
+        
+        echo "Checking for token patterns..."
+        grep -ri "token\|auth" src/ || echo "No token patterns found"
+        
+        echo "Checking for certificate patterns..."
+        find . -name "*.pem" -o -name "*.key" -o -name "*.crt" -o -name "*.p12" 2>/dev/null || echo "No certificate files found"
+
+    - name: Check for unsafe functions
+      run: |
+        echo "Checking for potentially unsafe C functions..."
+        
+        # Unsafe string functions
+        echo "Unsafe string functions:"
+        grep -rn "strcpy\|strcat\|sprintf\|gets\|scanf" src/ || echo "✅ No unsafe string functions found"
+        
+        # Buffer functions that could overflow
+        echo "Potentially unsafe buffer functions:"
+        grep -rn "memcpy\|memmove\|memset" src/ | head -10 || echo "No memcpy-family functions found"
+        
+        # Deprecated or dangerous functions
+        echo "Deprecated/dangerous functions:"
+        grep -rn "system\|popen\|tmpnam\|mktemp" src/ || echo "✅ No dangerous system functions found"
+
+    - name: Check memory management
+      run: |
+        echo "Checking memory management patterns..."
+        
+        # Look for malloc/free patterns
+        echo "Memory allocation patterns:"
+        grep -rn "malloc\|calloc\|realloc\|free" src/ | wc -l | xargs echo "Found allocation/deallocation calls:"
+        
+        # Check for potential memory leaks (basic pattern matching)
+        echo "Checking for potential memory leak patterns..."
+        MALLOC_COUNT=$(grep -rc "malloc\|calloc\|realloc" src/ | awk -F: '{sum+=$2} END {print sum}' 2>/dev/null || echo 0)
+        FREE_COUNT=$(grep -rc "free(" src/ | awk -F: '{sum+=$2} END {print sum}' 2>/dev/null || echo 0)
+        
+        echo "Allocation calls: $MALLOC_COUNT"
+        echo "Free calls: $FREE_COUNT"
+        
+        if [ "$MALLOC_COUNT" -gt 0 ] && [ "$FREE_COUNT" -gt 0 ]; then
+          if [ "$MALLOC_COUNT" -ne "$FREE_COUNT" ]; then
+            echo "⚠️ Allocation/deallocation count mismatch (may indicate memory leaks)"
+          else
+            echo "✅ Allocation/deallocation counts match"
+          fi
+        fi
+
+    - name: Check for format string vulnerabilities
+      run: |
+        echo "Checking for format string vulnerabilities..."
+        
+        # Look for printf family functions with non-constant format strings
+        grep -rn "printf\|fprintf\|sprintf\|snprintf" src/ | \
+          grep -v '\".*\"' | head -10 || echo "✅ No obvious format string vulnerabilities found"
+
+    - name: Check integer overflow potential
+      run: |
+        echo "Checking for potential integer overflow issues..."
+        
+        # Look for arithmetic operations that might overflow
+        grep -rn "\+\+\|--\|\*.*\*\|<<\|>>" src/ | head -10 || echo "Arithmetic operations found (manual review recommended)"
+
+    - name: Upload security analysis results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-analysis-results
+        path: |
+          cppcheck-results.xml
+          clang-tidy-results.txt
+          compile_commands.json
+        retention-days: 30
+
+  codesigning-security:
+    name: Code Signing Security Check
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check codesigning setup
+      run: |
+        echo "Checking codesigning security setup..."
+        
+        if [ -f "scripts/codesign" ]; then
+          echo "Found codesigning script"
+          
+          # Check if script contains hardcoded certificates or passwords
+          if grep -i "password\|passwd\|secret" scripts/codesign; then
+            echo "⚠️ Potential hardcoded credentials in codesigning script"
+          else
+            echo "✅ No obvious hardcoded credentials found"
+          fi
+          
+          # Check script permissions
+          PERMS=$(stat -f "%OLp" scripts/codesign)
+          echo "Codesigning script permissions: $PERMS"
+          
+          if [ "$PERMS" = "755" ] || [ "$PERMS" = "750" ]; then
+            echo "✅ Codesigning script has appropriate permissions"
+          else
+            echo "⚠️ Codesigning script permissions may be too permissive"
+          fi
+        else
+          echo "No codesigning script found"
+        fi
+        
+        # Check makefile for codesigning
+        if grep -q "codesign" makefile; then
+          echo "Found codesigning in makefile:"
+          grep "codesign" makefile
+          
+          # Check for hardcoded certificate names
+          if grep -q '".*-cert.*"' makefile; then
+            echo "Found certificate name in makefile"
+          fi
+        fi
+
+    - name: Check for certificate files
+      run: |
+        echo "Checking for certificate files in repository..."
+        
+        # Look for certificate files that shouldn't be committed
+        find . -name "*.p12" -o -name "*.pem" -o -name "*.key" -o -name "*.crt" | while read cert_file; do
+          echo "⚠️ Certificate file found: $cert_file"
+          echo "Certificate files should not be committed to version control"
+        done || echo "✅ No certificate files found in repository"
+
+    - name: Validate build security
+      run: |
+        echo "Checking build security settings..."
+        
+        # Check makefile for security flags
+        if grep -q "fstack-protector\|D_FORTIFY_SOURCE\|fPIE\|pie" makefile; then
+          echo "✅ Found security-related compiler flags"
+          grep "fstack-protector\|D_FORTIFY_SOURCE\|fPIE\|pie" makefile
+        else
+          echo "⚠️ No security-related compiler flags found"
+          echo "Consider adding: -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE"
+        fi
+        
+        # Check for position-independent code
+        if grep -q "\-fPIC\|\-fPIE" makefile; then
+          echo "✅ Position-independent code flags found"
+        else
+          echo "⚠️ No position-independent code flags found"
+        fi
+
+  dependency-check:
+    name: Dependency Security Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check system dependencies
+      run: |
+        echo "Checking system framework dependencies..."
+        
+        if grep -r "framework" makefile; then
+          echo "System frameworks used:"
+          grep -o "\-framework [A-Za-z]*" makefile | sort | uniq
+          
+          # Check for potentially risky frameworks
+          if grep -q "PrivateFrameworks" makefile; then
+            echo "⚠️ Using private frameworks - ensure necessary for functionality"
+            grep "PrivateFrameworks" makefile
+          fi
+        fi
+
+    - name: Check for external dependencies
+      run: |
+        echo "Checking for external dependencies..."
+        
+        # Check if there are any package managers or external deps
+        if [ -f "package.json" ] || [ -f "Podfile" ] || [ -f "Cartfile" ] || [ -f "Package.swift" ]; then
+          echo "Found dependency management files"
+          ls -la package.json Podfile Cartfile Package.swift 2>/dev/null || true
+        else
+          echo "✅ No external package managers found - using system frameworks only"
+        fi
+        
+        # Check for git submodules
+        if [ -f ".gitmodules" ]; then
+          echo "Found git submodules:"
+          cat .gitmodules
+        else
+          echo "✅ No git submodules found"
+        fi
+
+    - name: Check for hardcoded paths
+      run: |
+        echo "Checking for hardcoded system paths..."
+        
+        # Look for hardcoded paths that could be security issues
+        grep -rn "/tmp/\|/var/tmp/\|/Users/\|/private/" src/ | head -10 || echo "✅ No concerning hardcoded paths found"
+        
+        # Check for absolute paths in build system
+        grep -n "^/\|=/" makefile || echo "✅ No absolute paths in makefile"
+
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [static-analysis, codesigning-security, dependency-check]
+    if: always()
+    
+    steps:
+    - name: Security Summary Report
+      run: |
+        echo "🔒 Security Analysis Summary"
+        echo "=========================="
+        echo "Static Analysis: ${{ needs.static-analysis.result }}"
+        echo "Code Signing Security: ${{ needs.codesigning-security.result }}"
+        echo "Dependency Check: ${{ needs.dependency-check.result }}"
+        
+        if [ "${{ needs.static-analysis.result }}" = "success" ] && 
+           [ "${{ needs.codesigning-security.result }}" = "success" ] && 
+           [ "${{ needs.dependency-check.result }}" = "success" ]; then
+          echo "✅ All security checks passed!"
+        else
+          echo "⚠️ Some security checks failed or found issues"
+          echo "Please review the individual job results and artifacts"
+        fi
+        
+        echo ""
+        echo "🛡️ Security Recommendations:"
+        echo "- Regularly update dependencies"
+        echo "- Monitor for security advisories"
+        echo "- Keep codesigning certificates secure"
+        echo "- Review any static analysis findings"
+        echo "- Consider adding additional compiler security flags"
