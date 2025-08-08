@@ -21,7 +21,7 @@ jobs:
     runs-on: macos-latest
     
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.create_release.outputs.id }}
       tag_name: ${{ steps.get_version.outputs.tag_name }}
     
     steps:
@@ -71,12 +71,12 @@ jobs:
     
     - name: Create Release
       id: create_release
-      uses: actions/create-release@v1
+      uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.get_version.outputs.tag_name }}
-        release_name: Release ${{ steps.get_version.outputs.tag_name }}
+        name: Release ${{ steps.get_version.outputs.tag_name }}
         body_path: release_notes.md
         draft: false
         prerelease: false
@@ -239,46 +239,17 @@ jobs:
           echo "No install script found to update"
         fi
 
-    - name: Upload binary
-      uses: actions/upload-release-asset@v1
+    - name: Upload release assets
+      uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ./bin/yabai
-        asset_name: yabai
-        asset_content_type: application/octet-stream
-
-    - name: Upload archive
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ./bin/yabai-${{ needs.create-release.outputs.tag_name }}.tar.gz
-        asset_name: yabai-${{ needs.create-release.outputs.tag_name }}.tar.gz
-        asset_content_type: application/gzip
-
-    - name: Upload checksum
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ./bin/yabai-${{ needs.create-release.outputs.tag_name }}.tar.gz.sha256
-        asset_name: yabai-${{ needs.create-release.outputs.tag_name }}.tar.gz.sha256
-        asset_content_type: text/plain
-
-    - name: Upload man page
-      if: success()
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ./doc/yabai.1
-        asset_name: yabai.1
-        asset_content_type: text/plain
+        tag_name: ${{ needs.create-release.outputs.tag_name }}
+        files: |
+          ./bin/yabai
+          ./bin/yabai-${{ needs.create-release.outputs.tag_name }}.tar.gz
+          ./bin/yabai-${{ needs.create-release.outputs.tag_name }}.tar.gz.sha256
+          ./doc/yabai.1
 
   update-install-script:
     name: Update Install Script
