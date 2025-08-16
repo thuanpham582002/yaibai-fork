@@ -152,6 +152,27 @@ static inline void ensure_directory_exists(char *yabai_plist_path)
     *last_slash = '/';
 }
 
+static bool service_path_matches_current_executable(char *plist_path) 
+{
+    char exe_path[4096];
+    unsigned int exe_path_size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &exe_path_size) < 0) {
+        return false;
+    }
+
+    // Read existing plist and check if it contains current exe_path
+    FILE *file = fopen(plist_path, "r");
+    if (!file) return false;
+    
+    char buffer[8192];
+    size_t bytes_read = fread(buffer, 1, sizeof(buffer)-1, file);
+    fclose(file);
+    buffer[bytes_read] = '\0';
+    
+    // Simple check if current exe_path exists in the plist
+    return strstr(buffer, exe_path) != NULL;
+}
+
 static int service_install_internal(char *yabai_plist_path)
 {
     int yabai_plist_length;
@@ -173,7 +194,16 @@ static int service_install(void)
     char *yabai_plist_path = populate_plist_path();
 
     if (file_exists(yabai_plist_path)) {
-        error("yabai: service file '%s' is already installed! abort..\n", yabai_plist_path);
+        // Check if the existing service file has the correct path
+        if (service_path_matches_current_executable(yabai_plist_path)) {
+            error("yabai: service file '%s' is already installed! abort..\n", yabai_plist_path);
+        } else {
+            // Path mismatch - auto-update the service file
+            warn("yabai: service file has outdated path, updating...\n");
+            if (unlink(yabai_plist_path) != 0) {
+                error("yabai: failed to remove outdated service file! abort..\n");
+            }
+        }
     }
 
     return service_install_internal(yabai_plist_path);
